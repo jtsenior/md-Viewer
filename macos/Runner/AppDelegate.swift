@@ -10,37 +10,84 @@ class AppDelegate: FlutterAppDelegate {
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
 
-    // File path passed as a CLI argument — read content while we have OS access
     let args = CommandLine.arguments.dropFirst()
     if let firstArg = args.first, FileManager.default.fileExists(atPath: firstArg) {
       pendingFile = makeFileInfo(url: URL(fileURLWithPath: firstArg))
     }
   }
 
-  // Called from MainFlutterWindow.awakeFromNib() where the FlutterViewController is known
   func setupFileChannel(_ flutterVC: FlutterViewController) {
     methodChannel = FlutterMethodChannel(
       name: "com.jtsworkshop.mdViewer/file",
       binaryMessenger: flutterVC.engine.binaryMessenger
     )
     methodChannel?.setMethodCallHandler { [weak self] call, result in
-      if call.method == "getInitialFile" {
+      switch call.method {
+      case "getInitialFile":
         self?.flutterReady = true
         result(self?.pendingFile)
         self?.pendingFile = nil
-      } else {
+
+      case "createBookmark":
+        guard let path = call.arguments as? String else {
+          result(FlutterError(code: "INVALID_ARGS", message: "path required", details: nil))
+          return
+        }
+        let url = URL(fileURLWithPath: path)
+        do {
+          let data = try url.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+          )
+          result(data.base64EncodedString())
+        } catch {
+          result(FlutterError(code: "BOOKMARK_FAILED", message: error.localizedDescription, details: nil))
+        }
+
+      case "readWithBookmark":
+        guard let base64 = call.arguments as? String,
+              let data = Data(base64Encoded: base64) else {
+          result(FlutterError(code: "INVALID_ARGS", message: "base64 bookmark required", details: nil))
+          return
+        }
+        do {
+          var isStale = false
+          let url = try URL(
+            resolvingBookmarkData: data,
+            options: .withSecurityScope,
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+          )
+          guard url.startAccessingSecurityScopedResource() else {
+            result(FlutterError(code: "ACCESS_DENIED", message: "Could not access security-scoped resource", details: nil))
+            return
+          }
+          defer { url.stopAccessingSecurityScopedResource() }
+          let content = (try? String(contentsOf: url, encoding: .utf8))
+            ?? (try? String(contentsOf: url, encoding: .isoLatin1))
+            ?? ""
+          var info: [String: String] = ["path": url.path, "content": content]
+          // Refresh stale bookmark while we still have access
+          if isStale, let fresh = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
+            info["bookmark"] = fresh.base64EncodedString()
+          }
+          result(info)
+        } catch {
+          result(FlutterError(code: "BOOKMARK_ERROR", message: error.localizedDescription, details: nil))
+        }
+
+      default:
         result(FlutterMethodNotImplemented)
       }
     }
   }
 
-  // Modern URL-based handler — "Open With", Dock drops, double-click
   override func application(_ application: NSApplication, open urls: [URL]) {
     guard let url = urls.first else { return }
     deliver(makeFileInfo(url: url))
   }
 
-  // Legacy string-based fallback
   override func application(_ sender: NSApplication, openFile filename: String) -> Bool {
     deliver(makeFileInfo(url: URL(fileURLWithPath: filename)))
     return true
@@ -58,7 +105,15 @@ class AppDelegate: FlutterAppDelegate {
     let content = (try? String(contentsOf: url, encoding: .utf8))
       ?? (try? String(contentsOf: url, encoding: .isoLatin1))
       ?? ""
-    return ["path": url.path, "content": content]
+    var info: [String: String] = ["path": url.path, "content": content]
+    if let bookmarkData = try? url.bookmarkData(
+      options: .withSecurityScope,
+      includingResourceValuesForKeys: nil,
+      relativeTo: nil
+    ) {
+      info["bookmark"] = bookmarkData.base64EncodedString()
+    }
+    return info
   }
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

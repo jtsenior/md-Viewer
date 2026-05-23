@@ -60,16 +60,21 @@ class _HomeScreenState extends State<HomeScreen> {
     if (info == null) return;
     final path = info['path'] as String?;
     final content = info['content'] as String?;
+    final bookmark = info['bookmark'] as String?;
     if (path == null || path.isEmpty) return;
-    await _openSpecificFile(path, prefetchedContent: content);
+    await _openSpecificFile(path, prefetchedContent: content, bookmarkData: bookmark);
   }
 
-  Future<void> _openSpecificFile(String path, {String? prefetchedContent}) async {
+  Future<void> _openSpecificFile(
+    String path, {
+    String? prefetchedContent,
+    String? bookmarkData,
+  }) async {
     setState(() => _loading = true);
     try {
       final file = prefetchedContent != null
-          ? await _fileService.fileFromContent(path, prefetchedContent)
-          : await _fileService.readFile(path);
+          ? await _fileService.fileFromContent(path, prefetchedContent, bookmarkData: bookmarkData)
+          : await _fileService.readFile(path, bookmarkData: bookmarkData);
       setState(() => _currentFile = file);
       await _loadRecentFiles();
     } catch (e) {
@@ -107,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openRecentFile(MarkdownFile file) async {
     setState(() => _loading = true);
     try {
-      final loaded = await _fileService.readFile(file.path);
+      final loaded = await _fileService.readFile(file.path, bookmarkData: file.bookmarkData);
       setState(() => _currentFile = loaded);
       await _loadRecentFiles();
     } catch (e) {
@@ -130,7 +135,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_currentFile == null) return;
     setState(() => _loading = true);
     try {
-      final loaded = await _fileService.readFile(_currentFile!.path);
+      final loaded = await _fileService.readFile(
+        _currentFile!.path,
+        bookmarkData: _currentFile!.bookmarkData,
+      );
       setState(() => _currentFile = loaded);
     } finally {
       setState(() => _loading = false);

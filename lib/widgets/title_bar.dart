@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/markdown_file.dart';
+import '../services/export_service.dart';
 
 class TitleBar extends StatelessWidget {
   final MarkdownFile? currentFile;
@@ -10,6 +11,8 @@ class TitleBar extends StatelessWidget {
   final VoidCallback onToggleTheme;
   final VoidCallback onToggleSidebar;
   final VoidCallback? onRefresh;
+  final List<ExportFormat> exportFormats;
+  final void Function(ExportFormat)? onExport;
 
   const TitleBar({
     super.key,
@@ -20,6 +23,8 @@ class TitleBar extends StatelessWidget {
     required this.onToggleTheme,
     required this.onToggleSidebar,
     this.onRefresh,
+    this.exportFormats = const [],
+    this.onExport,
   });
 
   @override
@@ -74,6 +79,10 @@ class TitleBar extends StatelessWidget {
             ),
           ),
 
+          // Export
+          if (currentFile != null && exportFormats.isNotEmpty && onExport != null)
+            _ExportButton(formats: exportFormats, onExport: onExport!),
+
           // Refresh
           if (onRefresh != null)
             _BarButton(
@@ -99,6 +108,32 @@ class TitleBar extends StatelessWidget {
           const SizedBox(width: 8),
         ],
       ),
+    );
+  }
+}
+
+class _ExportButton extends StatelessWidget {
+  final List<ExportFormat> formats;
+  final void Function(ExportFormat) onExport;
+
+  const _ExportButton({required this.formats, required this.onExport});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<ExportFormat>(
+      tooltip: 'Export',
+      icon: Icon(
+        Icons.file_download_outlined,
+        size: 16,
+        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+      ),
+      itemBuilder: (_) => formats
+          .map((f) => PopupMenuItem<ExportFormat>(
+                value: f,
+                child: Text(f.label),
+              ))
+          .toList(),
+      onSelected: onExport,
     );
   }
 }

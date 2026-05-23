@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/markdown_file.dart';
 import '../services/file_service.dart';
+import '../services/export_service.dart';
 import '../widgets/sidebar.dart';
 import '../widgets/markdown_viewer.dart';
 import '../widgets/empty_state.dart';
@@ -25,6 +26,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _fileService = FileService();
+  final _exportService = ExportService();
   MarkdownFile? _currentFile;
   List<MarkdownFile> _recentFiles = [];
   bool _sidebarVisible = true;
@@ -89,6 +91,26 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
     );
+  }
+
+  Future<void> _exportFile(ExportFormat format) async {
+    if (_currentFile == null) return;
+    setState(() => _loading = true);
+    try {
+      await _exportService.export(format, _currentFile!);
+      if (mounted) {
+        final msg = format.skipSavePanel
+            ? 'Opened in Pages'
+            : 'Exported as ${format.label}';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      _showError('Export failed: $e');
+    } finally {
+      setState(() => _loading = false);
+    }
   }
 
   Future<void> _loadRecentFiles() async {
@@ -174,6 +196,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 onToggleSidebar: () =>
                     setState(() => _sidebarVisible = !_sidebarVisible),
                 onRefresh: _currentFile != null ? _refreshCurrentFile : null,
+                exportFormats: _exportService.formats,
+                onExport: _exportFile,
               ),
               Expanded(
                 child: Row(

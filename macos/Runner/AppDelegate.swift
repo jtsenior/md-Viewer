@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import UniformTypeIdentifiers
 
 @main
 class AppDelegate: FlutterAppDelegate {
@@ -75,6 +76,23 @@ class AppDelegate: FlutterAppDelegate {
           result(info)
         } catch {
           result(FlutterError(code: "BOOKMARK_ERROR", message: error.localizedDescription, details: nil))
+        }
+
+      case "showSavePanel":
+        let args = call.arguments as? [String: Any]
+        let suggestedName = args?["suggestedName"] as? String ?? "export"
+        let utTypeStrings = args?["utTypes"] as? [String] ?? []
+        DispatchQueue.main.async {
+          let panel = NSSavePanel()
+          panel.nameFieldStringValue = suggestedName
+          if #available(macOS 12, *) {
+            panel.allowedContentTypes = utTypeStrings.compactMap { UTType($0) }
+          } else {
+            panel.allowedFileTypes = utTypeStrings
+          }
+          panel.begin { response in
+            result(response == .OK ? panel.url?.path : nil)
+          }
         }
 
       default:

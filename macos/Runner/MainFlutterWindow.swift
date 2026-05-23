@@ -10,6 +10,11 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
+    // Set up the file channel here — we definitively have the FlutterViewController
+    if let appDelegate = NSApp.delegate as? AppDelegate {
+      appDelegate.setupFileChannel(flutterViewController)
+    }
+
     super.awakeFromNib()
   }
 }

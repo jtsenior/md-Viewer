@@ -27,15 +27,20 @@ class FileService {
   Future<MarkdownFile> readFile(String filePath) async {
     final file = File(filePath);
     final content = await file.readAsString();
-    final name = p.basenameWithoutExtension(filePath);
+    return _makeAndRecord(filePath, content);
+  }
 
+  Future<MarkdownFile> fileFromContent(String filePath, String content) async {
+    return _makeAndRecord(filePath, content);
+  }
+
+  Future<MarkdownFile> _makeAndRecord(String filePath, String content) async {
     final mdFile = MarkdownFile(
       path: filePath,
-      name: name,
+      name: p.basenameWithoutExtension(filePath),
       content: content,
       lastOpened: DateTime.now(),
     );
-
     await _addToRecent(mdFile);
     return mdFile;
   }

@@ -7,6 +7,8 @@ import '../widgets/markdown_viewer.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/title_bar.dart';
 
+const _fileChannel = MethodChannel('com.jtsworkshop.mdViewer/file');
+
 class HomeScreen extends StatefulWidget {
   final ThemeMode themeMode;
   final VoidCallback onToggleTheme;
@@ -32,21 +34,56 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadRecentFiles();
-    const initialFile = String.fromEnvironment('INITIAL_FILE');
-    if (initialFile.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _openSpecificFile(initialFile));
+    _fileChannel.setMethodCallHandler(_handleNativeFileOpen);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkInitialFile());
+  }
+
+  // Receives openFile calls from the native side while the app is already running
+  Future<void> _handleNativeFileOpen(MethodCall call) async {
+    if (call.method == 'openFile') {
+      final info = call.arguments as Map?;
+      await _openFromNativeInfo(info);
     }
   }
 
-  Future<void> _openSpecificFile(String path) async {
+  // Asks the native side for a file pending at launch (CLI arg or early Finder open)
+  Future<void> _checkInitialFile() async {
+    try {
+      final info = await _fileChannel.invokeMethod<Map>('getInitialFile');
+      await _openFromNativeInfo(info);
+    } catch (e) {
+      _showError('Could not retrieve initial file: $e');
+    }
+  }
+
+  Future<void> _openFromNativeInfo(Map? info) async {
+    if (info == null) return;
+    final path = info['path'] as String?;
+    final content = info['content'] as String?;
+    if (path == null || path.isEmpty) return;
+    await _openSpecificFile(path, prefetchedContent: content);
+  }
+
+  Future<void> _openSpecificFile(String path, {String? prefetchedContent}) async {
     setState(() => _loading = true);
     try {
-      final file = await _fileService.readFile(path);
+      final file = prefetchedContent != null
+          ? await _fileService.fileFromContent(path, prefetchedContent)
+          : await _fileService.readFile(path);
       setState(() => _currentFile = file);
       await _loadRecentFiles();
+    } catch (e) {
+      _showError('Could not open file: $e');
     } finally {
       setState(() => _loading = false);
     }
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
   }
 
   Future<void> _loadRecentFiles() async {

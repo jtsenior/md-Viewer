@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:markdown/markdown.dart' as md;
 import '../../models/markdown_file.dart';
+import '../../utils/markdown_splitter.dart';
 import '../export_service.dart';
+import '../mermaid_renderer.dart';
 
 class DocxFormat implements ExportFormat {
   @override
@@ -19,27 +22,88 @@ class DocxFormat implements ExportFormat {
 
   @override
   Future<Uint8List> generate(MarkdownFile file) async {
-    final nodes = md.Document(
-      extensionSet: md.ExtensionSet.gitHubFlavored,
-    ).parse(file.content);
-
+    final segments = MarkdownSplitter.split(file.content);
     final body = StringBuffer();
-    for (final node in nodes) {
-      if (node is md.Element) _writeElement(node, body);
+    final imageEntries = <({String rId, String fileName, Uint8List bytes})>[];
+    int imgIdx = 0;
+
+    for (final segment in segments) {
+      if (segment.isMermaid) {
+        final bytes = await MermaidRenderer.renderToPng(segment.content);
+        if (bytes != null) {
+          final rId = 'rIdImg$imgIdx';
+          final fileName = 'mermaid_$imgIdx.png';
+          imageEntries.add((rId: rId, fileName: fileName, bytes: bytes));
+          final dims = MermaidRenderer.pngDimensions(bytes);
+          body.write(_drawingPara(rId, dims.$1, dims.$2, imgIdx));
+          imgIdx++;
+        } else {
+          body.write(_para(_codeRun(segment.content), style: 'CodeBlock'));
+        }
+      } else {
+        final nodes = md.Document(
+          extensionSet: md.ExtensionSet.gitHubFlavored,
+        ).parse(segment.content);
+        for (final node in nodes) {
+          if (node is md.Element) _writeElement(node, body);
+        }
+      }
     }
 
+    final imageRels = imageEntries.map((e) =>
+        '<Relationship Id="${e.rId}"'
+        ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"'
+        ' Target="media/${e.fileName}"/>').join('\n  ');
+
     final archive = Archive()
-      ..addFile(_utf8File('[Content_Types].xml', _contentTypes()))
+      ..addFile(_utf8File('[Content_Types].xml', _contentTypes(hasImages: imageEntries.isNotEmpty)))
       ..addFile(_utf8File('_rels/.rels', _rels()))
       ..addFile(_utf8File('word/document.xml', _document(body.toString())))
-      ..addFile(_utf8File('word/_rels/document.xml.rels', _documentRels()))
+      ..addFile(_utf8File('word/_rels/document.xml.rels', _documentRels(imageRels)))
       ..addFile(_utf8File('word/styles.xml', _styles()))
       ..addFile(_utf8File('word/settings.xml', _settings()));
+
+    for (final e in imageEntries) {
+      archive.addFile(ArchiveFile('word/media/${e.fileName}', e.bytes.length, e.bytes));
+    }
 
     return Uint8List.fromList(ZipEncoder().encode(archive)!);
   }
 
-  void _writeElement(md.Element el, StringBuffer out, {int listDepth = 0}) {
+  // 1 twip = 635 EMU; content width = 9360 twips = 5,943,600 EMU
+  String _drawingPara(String rId, int imgW, int imgH, int id) {
+    const contentEmu = 5943600;
+    const cx = contentEmu;
+    final cy = imgW > 0 ? (contentEmu * imgH ~/ imgW) : 2000000;
+    return '<w:p><w:r><w:drawing>'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        '<wp:extent cx="$cx" cy="$cy"/>'
+        '<wp:docPr id="${id + 1}" name="Mermaid$id"/>'
+        '<wp:cNvGraphicFramePr/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:nvPicPr>'
+        '<pic:cNvPr id="${id + 1}" name="Mermaid$id"/>'
+        '<pic:cNvPicPr/>'
+        '</pic:nvPicPr>'
+        '<pic:blipFill>'
+        '<a:blip r:embed="$rId"/>'
+        '<a:stretch><a:fillRect/></a:stretch>'
+        '</pic:blipFill>'
+        '<pic:spPr>'
+        '<a:xfrm><a:off x="0" y="0"/><a:ext cx="$cx" cy="$cy"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        '</pic:spPr>'
+        '</pic:pic>'
+        '</a:graphicData>'
+        '</a:graphic>'
+        '</wp:inline>'
+        '</w:drawing></w:r></w:p>';
+  }
+
+  void _writeElement(md.Element el, StringBuffer out) {
     switch (el.tag) {
       case 'h1':
         out.write(_para(_inlineRuns(el.children ?? []), style: 'Heading1'));
@@ -81,8 +145,11 @@ class DocxFormat implements ExportFormat {
     for (final child in el.children ?? []) {
       if (child is md.Element && child.tag == 'li') {
         final prefix = ordered ? '${index++}.' : '•';
-        final runs = _inlineRuns(child.children ?? []);
-        out.write(_para('$prefix\t$runs', style: 'ListParagraph'));
+        // Bullet/number run + tab run + content runs — all proper <w:r> elements
+        final prefixRun = _run(prefix);
+        const tabRun = '<w:r><w:tab/></w:r>';
+        final contentRuns = _inlineRuns(child.children ?? []);
+        out.write(_para('$prefixRun$tabRun$contentRuns', style: 'ListParagraph'));
       }
     }
   }
@@ -102,15 +169,32 @@ class DocxFormat implements ExportFormat {
     }
     if (rows.isEmpty) return;
 
+    final colCount = rows
+        .map((r) => (r.children ?? []).whereType<md.Element>().where((e) => e.tag == 'td' || e.tag == 'th').length)
+        .fold(0, (a, b) => a > b ? a : b);
+    // Page is 12240 twips wide, 1440-twip margins each side → 9360 twips content width
+    const contentDxa = 9360;
+    final colWidthDxa = colCount > 0 ? (contentDxa ~/ colCount) : contentDxa;
+
+    final tblGrid = StringBuffer('<w:tblGrid>');
+    for (int i = 0; i < colCount; i++) {
+      tblGrid.write('<w:gridCol w:w="$colWidthDxa"/>');
+    }
+    tblGrid.write('</w:tblGrid>');
+
     out.write('<w:tbl>'
         '<w:tblPr><w:tblStyle w:val="TableGrid"/>'
-        '<w:tblW w:w="0" w:type="auto"/></w:tblPr>');
+        '<w:tblW w:w="$contentDxa" w:type="dxa"/>'
+        '<w:tblLayout w:type="fixed"/></w:tblPr>'
+        '$tblGrid');
     for (final row in rows) {
       out.write('<w:tr>');
       for (final cell in (row.children ?? []).whereType<md.Element>()) {
         if (cell.tag != 'td' && cell.tag != 'th') continue;
         final bold = cell.tag == 'th';
-        out.write('<w:tc><w:p><w:r>');
+        out.write('<w:tc>'
+            '<w:tcPr><w:tcW w:w="$colWidthDxa" w:type="dxa"/></w:tcPr>'
+            '<w:p><w:r>');
         if (bold) out.write('<w:rPr><w:b/></w:rPr>');
         out.write('<w:t xml:space="preserve">${_escape(_innerText(cell))}</w:t>');
         out.write('</w:r></w:p></w:tc>');
@@ -157,14 +241,24 @@ class DocxFormat implements ExportFormat {
     return '';
   }
 
+  String _decodeEntities(String s) => s
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&apos;', "'")
+      .replaceAll('&nbsp;', ' ');
+
   String _run(String text, {bool bold = false, bool italic = false, bool code = false}) {
-    if (text.isEmpty) return '';
+    final t = _decodeEntities(text);
+    if (t.isEmpty) return '';
     final props = StringBuffer('<w:rPr>');
     if (bold) props.write('<w:b/>');
     if (italic) props.write('<w:i/>');
     if (code) props.write('<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>');
     props.write('</w:rPr>');
-    return '<w:r>$props<w:t xml:space="preserve">${_escape(text)}</w:t></w:r>';
+    return '<w:r>$props<w:t xml:space="preserve">${_escape(t)}</w:t></w:r>';
   }
 
   String _codeRun(String text) =>
@@ -179,7 +273,7 @@ class DocxFormat implements ExportFormat {
   String _innerText(md.Element el) {
     final buf = StringBuffer();
     for (final child in el.children ?? []) {
-      if (child is md.Text) buf.write(child.text);
+      if (child is md.Text) buf.write(_decodeEntities(child.text));
       if (child is md.Element) buf.write(_innerText(child));
     }
     return buf.toString();
@@ -192,31 +286,35 @@ class DocxFormat implements ExportFormat {
       .replaceAll('"', '&quot;');
 
   ArchiveFile _utf8File(String name, String content) {
-    final bytes = content.codeUnits;
+    final bytes = utf8.encode(content);
     return ArchiveFile(name, bytes.length, bytes);
   }
 
   // ── DOCX XML stubs ────────────────────────────────────────────────────────
 
-  String _contentTypes() => '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-  <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
-</Types>''';
+  String _contentTypes({bool hasImages = false}) =>
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      '<Default Extension="xml" ContentType="application/xml"/>'
+      '${hasImages ? '<Default Extension="png" ContentType="image/png"/>' : ''}'
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+      '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+      '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>'
+      '</Types>';
 
   String _rels() => '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>''';
 
-  String _documentRels() => '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
-</Relationships>''';
+  String _documentRels(String extraRels) =>
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>'
+      '$extraRels'
+      '</Relationships>';
 
   String _document(String body) =>
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'

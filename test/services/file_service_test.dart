@@ -19,7 +19,7 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  Future<File> _writeTemp(String name, String content) async {
+  Future<File> writeTemp(String name, String content) async {
     final f = File('${tempDir.path}/$name');
     await f.writeAsString(content);
     return f;
@@ -32,7 +32,7 @@ void main() {
     });
 
     test('returns only files that exist on disk', () async {
-      final existing = await _writeTemp('exists.md', '# Hello');
+      final existing = await writeTemp('exists.md', '# Hello');
       const missing = '/nonexistent/path/missing.md';
 
       final prefs = await SharedPreferences.getInstance();
@@ -68,11 +68,11 @@ void main() {
 
   group('FileService.removeFromRecent', () {
     test('removes the specified path from prefs', () async {
-      final f1 = await _writeTemp('a.md', '# A');
-      final f2 = await _writeTemp('b.md', '# B');
+      final f1 = await writeTemp('a.md', '# A');
+      final f2 = await writeTemp('b.md', '# B');
 
       final prefs = await SharedPreferences.getInstance();
-      final entry = (String path, String name) => jsonEncode(
+      String entry(String path, String name) => jsonEncode(
             MarkdownFile(
               path: path,
               name: name,
@@ -95,7 +95,7 @@ void main() {
 
   group('FileService.readFile', () {
     test('reads content from disk and adds to recent files', () async {
-      final f = await _writeTemp('readme.md', '# Readme\nHello.');
+      final f = await writeTemp('readme.md', '# Readme\nHello.');
       final result = await service.readFile(f.path);
 
       expect(result.content, '# Readme\nHello.');

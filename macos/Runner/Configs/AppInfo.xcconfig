@@ -11,4 +11,4 @@ PRODUCT_NAME = md Viewer
 PRODUCT_BUNDLE_IDENTIFIER = com.jtsworkshop.mdViewer
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.jtsworkshop. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Joshua Pyle. Licensed under the Apache License, Version 2.0.

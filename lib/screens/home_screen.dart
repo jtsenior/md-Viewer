@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/markdown_file.dart';
@@ -48,8 +49,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Asks the native side for a file pending at launch (CLI arg or early Finder open)
+  // Asks the native side for a file pending at launch (CLI arg or early Finder open).
+  // Only implemented on macOS; other platforms have no pending-file delivery.
   Future<void> _checkInitialFile() async {
+    if (!Platform.isMacOS) return;
     try {
       final info = await _fileChannel.invokeMethod<Map>('getInitialFile');
       await _openFromNativeInfo(info);
@@ -172,14 +175,19 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDark = widget.themeMode == ThemeMode.dark;
     final cs = Theme.of(context).colorScheme;
 
+    // macOS uses Cmd for shortcuts; other desktop platforms use Ctrl.
+    final useMeta = Platform.isMacOS;
+
     return Scaffold(
       backgroundColor: cs.surface,
       body: CallbackShortcuts(
         bindings: {
-          const SingleActivator(LogicalKeyboardKey.keyO, meta: true): _openFile,
-          const SingleActivator(LogicalKeyboardKey.keyR, meta: true):
+          SingleActivator(LogicalKeyboardKey.keyO, meta: useMeta, control: !useMeta):
+              _openFile,
+          SingleActivator(LogicalKeyboardKey.keyR, meta: useMeta, control: !useMeta):
               _refreshCurrentFile,
-          const SingleActivator(LogicalKeyboardKey.backslash, meta: true): () {
+          SingleActivator(LogicalKeyboardKey.backslash, meta: useMeta, control: !useMeta):
+              () {
             setState(() => _sidebarVisible = !_sidebarVisible);
           },
         },

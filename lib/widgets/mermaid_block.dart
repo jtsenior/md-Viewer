@@ -1,6 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+
+// webview_flutter only ships platform implementations for Android, iOS, and macOS.
+bool get _webviewSupported => Platform.isMacOS || Platform.isIOS || Platform.isAndroid;
 
 class MermaidBlock extends StatefulWidget {
   final String source;
@@ -13,13 +17,14 @@ class MermaidBlock extends StatefulWidget {
 }
 
 class _MermaidBlockState extends State<MermaidBlock> {
-  late final WebViewController _controller;
+  WebViewController? _controller;
   double _height = 200;
   bool _loaded = false;
 
   @override
   void initState() {
     super.initState();
+    if (!_webviewSupported) return;
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel(
@@ -40,12 +45,13 @@ class _MermaidBlockState extends State<MermaidBlock> {
   @override
   void didUpdateWidget(MermaidBlock old) {
     super.didUpdateWidget(old);
+    if (_controller == null) return;
     if (old.isDark != widget.isDark || old.source != widget.source) {
       setState(() {
         _loaded = false;
         _height = 200;
       });
-      _controller.loadHtmlString(_buildHtml(widget.source, widget.isDark));
+      _controller!.loadHtmlString(_buildHtml(widget.source, widget.isDark));
     }
   }
 
@@ -122,6 +128,28 @@ class _MermaidBlockState extends State<MermaidBlock> {
         ? const Color(0xFF1E1E2E)
         : const Color(0xFFEAEAE8);
 
+    if (_controller == null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: cs.onSurface.withValues(alpha: 0.08),
+            width: 1,
+          ),
+        ),
+        child: Text(
+          'Mermaid diagram preview is not available on this platform.\n\n${widget.source}',
+          style: TextStyle(
+            fontFamily: 'monospace',
+            color: cs.onSurface.withValues(alpha: 0.7),
+          ),
+        ),
+      );
+    }
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 120),
       height: _height,
@@ -137,7 +165,7 @@ class _MermaidBlockState extends State<MermaidBlock> {
       clipBehavior: Clip.hardEdge,
       child: Stack(
         children: [
-          WebViewWidget(controller: _controller),
+          WebViewWidget(controller: _controller!),
           if (!_loaded)
             Center(
               child: SizedBox(

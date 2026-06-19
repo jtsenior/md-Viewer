@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/markdown_file.dart';
@@ -17,10 +18,11 @@ abstract class ExportFormat {
 class ExportService {
   static const _channel = MethodChannel('com.jtsworkshop.mdViewer/file');
 
+  // "Open in Pages" only makes sense where Pages is installed.
   final List<ExportFormat> _formats = [
     PdfFormat(),
     DocxFormat(),
-    PagesFormat(),
+    if (Platform.isMacOS) PagesFormat(),
   ];
 
   List<ExportFormat> get formats => List.unmodifiable(_formats);
@@ -52,6 +54,10 @@ class ExportService {
     required String suggestedName,
     required List<String> utTypes,
   }) async {
+    // Native NSSavePanel only exists on macOS; other platforms use file_picker's dialog.
+    if (!Platform.isMacOS) {
+      return FilePicker.platform.saveFile(fileName: suggestedName);
+    }
     return _channel.invokeMethod<String>('showSavePanel', {
       'suggestedName': suggestedName,
       'utTypes': utTypes,
